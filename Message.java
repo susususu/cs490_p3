@@ -10,10 +10,14 @@ public class Message implements Serializable{
 	
 	VectorClock VC;
 	String message;
+	int messageNumber;
+	String sender;
 	
-	public Message(VectorClock vC, String message) {
+	public Message(VectorClock vC, String message, int no, String sender) {
 		VC = vC;
 		this.message = message;
+		this.messageNumber = no;
+		this.sender = sender;
 	}
 
 	public VectorClock getVC() {

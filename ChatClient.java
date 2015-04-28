@@ -2,23 +2,29 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedList;
 import java.util.Scanner;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 
 
 public class ChatClient extends Process implements Runnable {
 
+	/**
+	 * 
+	 */
+	private static final long serialVersionUID = 1L;
+
 	ArrayList<Process> group;
 	
 	//connection to the server
 	Socket s;
-	
+
 	//Socket for incoming chat
 	ServerSocket serverSocket;
 	Socket _client;
@@ -33,15 +39,18 @@ public class ChatClient extends Process implements Runnable {
 	String serverAddress;
 	int portNumber;
 	
-	//message set
-	HashMap<String, LinkedList<Integer>> messageSet;
-	
 	int HEARTBEAT_RATE = 5;
 	int THREAD_POOL_CAPACITY = 50;
 	int eventNumber;
+	int messageNumber;
+	ConcurrentHashMap<String, CopyOnWriteArrayList<Integer>> messageSet;
+	CopyOnWriteArrayList<Message> PendingSet;
 	
 	public ChatClient( String serverAddress, int portNumber ) throws IOException {
-		this.eventNumber = 0;
+		this.eventNumber = 1;
+		this.messageNumber = 0;
+		this.messageSet = new ConcurrentHashMap<String, CopyOnWriteArrayList<Integer>>();
+		this.PendingSet = new CopyOnWriteArrayList<Message>();
 		
 		this.serverAddress = serverAddress;
 		this.portNumber = portNumber;
@@ -51,17 +60,15 @@ public class ChatClient extends Process implements Runnable {
 		
 		this.sc = new Scanner(System.in);
 		this.group = new ArrayList<Process>();
-		this.messageSet = new HashMap<String, LinkedList<Integer>>();
 		
 		//connecting to the server
 		this.s = new Socket(serverAddress, portNumber);
 		
 		this.IP = s.getLocalAddress().toString().substring(1);
 		this.port = this.serverSocket.getLocalPort();
-		
 	}
 
-	public boolean register() throws IOException {
+	public boolean register() throws IOException, ClassNotFoundException {
 		System.out.print("Please Enter Your Name: ");
 		this.ID = sc.nextLine();
 		
@@ -75,6 +82,9 @@ public class ChatClient extends Process implements Runnable {
 		if(reply.equals("Success")) {
 			int i = dIn.readInt();
 			this.ProcessID = i;
+			this.executor.execute(this);
+			this.getGroup();
+			this.vc = new VectorClock(this.group);
 			return true;
 		}
 		return false;
@@ -82,8 +92,56 @@ public class ChatClient extends Process implements Runnable {
 	
 	@Override
 	public void run() {
+ 		while(true) {
+			try {
+				Socket client = this.serverSocket.accept();
+				ObjectInputStream ois;
+				try {
+					ois = new ObjectInputStream(client.getInputStream());
+					Message m = (Message) ois.readObject();
+					this.recieve(m);
+					client.close();
+					Thread.yield();
+				} catch (Exception e) {
+					e.printStackTrace();
+				}
+			} catch(Exception e) {
+				e.printStackTrace();
+			}
+ 		}
 	}
 	
+	public void rbDeliver(Message m) throws ClassNotFoundException, IOException {
+		this.vc.increment(m.sender);
+		CopyOnWriteArrayList<Integer> n = null;
+		if(this.messageSet.containsKey(m.sender)) {
+			n = this.messageSet.get(m.sender);
+			if(n.contains(m.messageNumber)) return;
+		} else {
+			n = new CopyOnWriteArrayList<Integer>();
+		}
+		System.out.printf("%s : %s\n", m.sender, m.message);
+		n.add(m.messageNumber);
+		this.messageSet.put(m.sender, n);
+		this.bebBroadcast(m);
+	}
+	
+ 	public void recieve(Message m) throws Exception {
+ 		this.PendingSet.add(m);
+ 		for(Message msg : this.PendingSet) {
+ 			if(this.vc.compare(msg.VC)) {
+ 		 		this.rbDeliver(m);
+ 		 		this.vc.increment(msg.sender);
+ 		 		this.vc.merge(msg.VC);
+ 		 		this.PendingSet.remove(msg);
+ 			} else if(this.vc.clock.size() != msg.VC.clock.size()) {
+ 				this.getGroup();
+ 				this.vc.update(this.group);
+ 			}
+ 		}
+ 	}
+
+ 		
 	public void sendHeartbeat() {
 		this.executor.execute(new Runnable() {
 
@@ -93,7 +151,6 @@ public class ChatClient extends Process implements Runnable {
 			public void run() {
 				try {
 					while(true) {
-						System.out.println("heartbeat");
 						DataOutputStream dOut = new DataOutputStream(c.s.getOutputStream());
 						dOut.writeChar('h');
 						dOut.flush();
@@ -113,7 +170,16 @@ public class ChatClient extends Process implements Runnable {
 	}
 	
 	@SuppressWarnings("unchecked")
-	public void prompt() throws IOException, ClassNotFoundException {
+	public void getGroup() throws IOException, ClassNotFoundException {
+		DataOutputStream dOut = new DataOutputStream(this.s.getOutputStream());
+		dOut.writeChar('g');
+		dOut.flush();
+		
+		ObjectInputStream ois = new ObjectInputStream(this.s.getInputStream());
+		this.group = (ArrayList<Process>)ois.readObject();
+	}
+	
+	public void prompt() throws IOException, ClassNotFoundException, InterruptedException {
 		while(true) {
 			System.out.print("> ");
 			String s = this.sc.nextLine();
@@ -121,21 +187,48 @@ public class ChatClient extends Process implements Runnable {
 				this.s.close();
 				System.exit(0);
 			} else if(s.equals("get")) {
-				DataOutputStream dOut = new DataOutputStream(this.s.getOutputStream());
-				dOut.writeChar('g');
-				dOut.flush();
-				ObjectInputStream ois = new ObjectInputStream(this.s.getInputStream());
-				this.group = (ArrayList<Process>)ois.readObject();
+				this.getGroup();
 				for(Process p: this.group) {
 					System.out.printf("%s ", p.ID);
 				}
 				System.out.println();
+			} else if(s.startsWith("bc")) {
+				this.getGroup();
+				String msg = s.substring(3);
+				this.vc.increment(this.ID);
+				Message m = new Message(this.vc, msg, this.messageNumber++, this.ID);
+				this.bebBroadcast(m);
+			}  else if (s.equals("test2")) {
+				for(int i = 0; i < 3000; i++) {
+					Message m = new Message(this.vc, Integer.toString(i), this.messageNumber, this.ID);
+					this.messageNumber++;
+					this.bebBroadcast(m);
+					Thread.sleep(10);
+				}
+			} else if(s.equals("vc")) {
+				System.out.println(this.vc.clock.toString());
+			}
+		}
+	}
+
+	public void bebBroadcast(Message m) throws ClassNotFoundException, IOException {
+		this.vc.update(this.group);
+		for(Process p : this.group) {
+			Socket s;
+			try {
+				s = new Socket(p.IP, p.port);
+				ObjectOutputStream oos = new ObjectOutputStream(s.getOutputStream());
+				oos.writeObject(m);
+				oos.flush();
+				s.close();
+			} catch (IOException e) {
+				System.out.printf("%s is not online\n", p.ID);
 			}
 		}
 	}
 	
 	public static void main(String[] args) throws Exception {
-ChatClient cc = null;
+		ChatClient cc = null;
 		
 		if(args.length == 2){
 			cc = new ChatClient( args[0], Integer.parseInt(args[1]) );

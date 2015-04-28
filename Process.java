@@ -11,4 +11,5 @@ public class Process implements Serializable{
 	int port;
 	String ID;
 	int ProcessID;
+	VectorClock vc;
 }

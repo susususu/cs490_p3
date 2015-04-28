@@ -1,6 +1,7 @@
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -76,6 +77,7 @@ public class MultiThreadedChatServer implements Runnable{
 			String str = "Success";
 			DataOutputStream dOut = new DataOutputStream(this._client.getOutputStream());
 			dOut.writeUTF(str);
+			dOut.flush();
 			dOut.writeInt(ClientIDCounter);
 			ClientIDCounter++;
 			dOut.flush();
@@ -132,6 +134,7 @@ public class MultiThreadedChatServer implements Runnable{
 					} else if(flag == 'g') {
 						System.out.println(MultiThreadedChatServer.group.toString());
 						ObjectOutputStream oos = new ObjectOutputStream(this._client.getOutputStream());
+						oos.reset();
 						oos.writeObject(MultiThreadedChatServer.group);
 						oos.flush();
 					} else if(flag == 'h') {
